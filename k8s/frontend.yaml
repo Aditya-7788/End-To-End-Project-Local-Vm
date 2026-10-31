@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: careflow-frontend
+  namespace: careflow
+  labels:
+    app: careflow-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: careflow-frontend
+  template:
+    metadata:
+      labels:
+        app: careflow-frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: careflow-frontend
+          image: <ACR_NAME>.azurecr.io/careflow-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: careflow-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d
+            - name: nginx-temp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-config
+          emptyDir: {}
+        - name: nginx-temp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: careflow-frontend
+  namespace: careflow
+spec:
+  type: ClusterIP
+  selector:
+    app: careflow-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

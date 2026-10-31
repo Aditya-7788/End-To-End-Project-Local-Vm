@@ -1,0 +1,39 @@
+location            = "eastus"
+resource_group_name = "rg-github-runner"
+
+virtual_network_name = "vnet-github-runner"
+virtual_network_cidr = "10.42.0.0/16"
+runner_subnet_name   = "snet-github-runner"
+runner_subnet_cidr   = "10.42.1.0/24"
+bastion_subnet_cidr  = "10.42.2.0/26"
+runner_private_ip    = "10.42.1.10"
+
+enable_bastion     = true
+enable_nat_gateway = true
+enable_monitoring  = false
+
+vm_name       = "vm-github-runner"
+vm_size       = "Standard_B2ms"
+admin_username = "azureuser"
+os_disk_size_gb = 64
+
+# Supply subscription_id and ssh_public_key through a local terraform.tfvars file
+# or the TF_VAR_subscription_id and TF_VAR_ssh_public_key environment variables.
+# Never put an SSH private key or runner registration token in Terraform inputs.
+
+# When AKS is in another VNet, set enable_aks_vnet_peering to true and provide
+# aks_vnet_id, aks_vnet_name, and aks_vnet_resource_group_name. The remote VNet
+# requires Network Contributor for the identity running Terraform.
+#
+# Add each existing private DNS zone to private_dns_zones. Include the AKS
+# privatelink zone for the configured Azure region and, when applicable, the ACR
+# and Key Vault zones (privatelink.azurecr.io and privatelink.vaultcore.azure.net).
+#
+# Set acr_id, aks_cluster_id, and/or key_vault_id to grant the corresponding
+# optional managed-identity roles. Add Azure Kubernetes Service RBAC Writer to
+# aks_rbac_role_names only when Azure RBAC is enabled on AKS.
+
+tags = {
+  environment = "production"
+  project     = "github-runner"
+}

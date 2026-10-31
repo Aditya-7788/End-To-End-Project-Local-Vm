@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: careflow
+  namespace: careflow
+spec:
+  ingressClassName: nginx-internal
+  rules:
+    - host: careflow.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: careflow-frontend
+                port:
+                  number: 80

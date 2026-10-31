@@ -1,0 +1,12 @@
+{
+  "name": "careflow-ai",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "test": "npm run test --workspace backend && npm run test --workspace frontend"
+  }
+}

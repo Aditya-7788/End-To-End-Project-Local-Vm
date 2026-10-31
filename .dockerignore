@@ -1,0 +1,15 @@
+.git
+.terraform
+**/node_modules
+**/dist
+**/coverage
+.env
+.env.*
+!.env.example
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+tfplan
+*.pem
+*.key
+*.log
