@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiRequest } from './api';
 import { ChatPage } from './components/ChatPage';
 import { Disclaimer } from './components/Disclaimer';
+import { AppointmentsPage } from './components/AppointmentsPage';
+import { DoctorDrawer } from './components/DoctorDrawer';
+import { FindDoctorsPage } from './components/FindDoctorsPage';
 
 function AuthPage({ onAuthenticated }) {
   const [mode, setMode] = useState('login');
@@ -50,92 +53,95 @@ function AuthPage({ onAuthenticated }) {
   );
 }
 
-function DoctorsPage({ token }) {
-  const [doctors, setDoctors] = useState([]);
-  const [specialty, setSpecialty] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    apiRequest(`/doctors${specialty ? `?specialty=${encodeURIComponent(specialty)}` : ''}`, { token })
-      .then((result) => { if (active) setDoctors(result.doctors); })
-      .catch((requestError) => { if (active) setError(requestError.message); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [specialty, token]);
-
-  return (
-    <section className="content-page">
-      <div className="page-heading"><p className="eyebrow">OUR CARE TEAM</p><h1>Find a doctor</h1><p>Browse our fictional demo clinicians by specialty.</p></div>
-      <label className="filter-label" htmlFor="specialty">Filter specialty</label>
-      <select id="specialty" value={specialty} onChange={(event) => setSpecialty(event.target.value)}>
-        <option value="">All specialties</option>
-        {['General Physician', 'Cardiology', 'Neurology', 'Dermatology', 'Pediatrics'].map((name) => <option key={name}>{name}</option>)}
-      </select>
-      {loading && <p role="status">Loading doctors...</p>}
-      {error && <p className="error-message" role="alert">{error}</p>}
-      <div className="doctor-grid">{doctors.map((doctor) => (
-        <article className="doctor-profile" key={doctor.id}>
-          <span className="doctor-avatar large">{doctor.name.split(' ').at(-1)?.[0]}</span>
-          <p className="eyebrow">{doctor.specialty}</p><h2>{doctor.name}</h2><p>{doctor.bio}</p><span className="clinic-name">{doctor.clinic}</span>
-        </article>
-      ))}</div>
-    </section>
-  );
-}
-
-function AppointmentsPage({ token }) {
-  const [appointments, setAppointments] = useState([]);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-  async function refresh() {
-    setLoading(true);
-    try {
-      const result = await apiRequest('/appointments/me', { token });
-      setAppointments(result.appointments);
-      setError('');
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => { refresh(); }, [token]);
-  async function cancel(id) {
-    try {
-      await apiRequest(`/appointments/${id}`, { token, method: 'DELETE' });
-      await refresh();
-    } catch (requestError) {
-      setError(requestError.message);
-    }
-  }
-  return (
-    <section className="content-page">
-      <div className="page-heading"><p className="eyebrow">YOUR VISITS</p><h1>My appointments</h1><p>Review or cancel your upcoming appointments.</p></div>
-      {loading && <p role="status">Loading appointments...</p>}
-      {error && <p className="error-message" role="alert">{error}</p>}
-      {!loading && appointments.length === 0 && <div className="empty-state"><span>♡</span><h2>No appointments yet</h2><p>Your confirmed visits will appear here.</p></div>}
-      <div className="appointment-list">{appointments.map((appointment) => (
-        <article className="appointment-card" key={appointment.id}>
-          <div className="date-tile"><strong>{new Date(appointment.starts_at).toLocaleDateString(undefined, { day: '2-digit' })}</strong><span>{new Date(appointment.starts_at).toLocaleDateString(undefined, { month: 'short' })}</span></div>
-          <div className="appointment-details"><h2>{appointment.doctor_name}</h2><p>{appointment.specialty} · {appointment.clinic}</p><span>{new Date(appointment.starts_at).toLocaleString()}</span></div>
-          <button className="button button-secondary" onClick={() => cancel(appointment.id)}>Cancel</button>
-        </article>
-      ))}</div>
-    </section>
-  );
-}
-
 export default function App() {
   const [auth, setAuth] = useState(() => {
     try { return JSON.parse(localStorage.getItem('careflow-auth') || 'null'); } catch { return null; }
   });
-  const [page, setPage] = useState('chat');
+  const [page, setPage] = useState(() => window.location.hash.startsWith('#doctor=') ? 'doctors' : 'chat');
+  const [selectedDoctor, setSelectedDoctor] = useState(null);
+  const [selectedDoctorId, setSelectedDoctorId] = useState(() => window.location.hash.startsWith('#doctor=') ? window.location.hash.slice(8) : '');
+  const returnFocusTarget = useRef(null);
+  const [toast, setToast] = useState('');
+  const [manualDark, setManualDark] = useState(null);
+  const [systemDark, setSystemDark] = useState(false);
+  const toastTimer = useRef(null);
+
+  const showToast = useCallback((message) => {
+    setToast(message);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(''), 3500);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+
+  const closeDoctorDrawer = useCallback(() => {
+    setSelectedDoctor(null);
+    setSelectedDoctorId('');
+    if (window.location.hash.startsWith('#doctor=')) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
+  }, []);
+
+  const openDoctor = useCallback((doctor, triggerElement) => {
+    returnFocusTarget.current = triggerElement || (document.activeElement === document.body ? null : document.activeElement);
+    setSelectedDoctor(doctor);
+    setSelectedDoctorId(doctor.id);
+    if (window.location.hash !== `#doctor=${doctor.id}`) {
+      window.history.pushState(null, '', `${window.location.pathname}${window.location.search}#doctor=${doctor.id}`);
+    }
+  }, []);
+
+  const navigate = useCallback((nextPage) => {
+    if (selectedDoctorId) closeDoctorDrawer();
+    setPage(nextPage);
+  }, [closeDoctorDrawer, selectedDoctorId]);
+
+  useEffect(() => {
+    const hashChanged = () => {
+      const id = window.location.hash.startsWith('#doctor=') ? window.location.hash.slice(8) : '';
+      setSelectedDoctorId(id);
+      if (id) setPage('doctors');
+      else setSelectedDoctor(null);
+    };
+    window.addEventListener('hashchange', hashChanged);
+    window.addEventListener('popstate', hashChanged);
+    return () => {
+      window.removeEventListener('hashchange', hashChanged);
+      window.removeEventListener('popstate', hashChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDoctorId || selectedDoctor?.id === selectedDoctorId && selectedDoctor.bio) return;
+    let active = true;
+    setSelectedDoctor(null);
+    apiRequest('/doctors', { token: auth.token })
+      .then(({ doctors }) => {
+        if (!active) return;
+        const match = doctors.find((doctor) => doctor.id === selectedDoctorId);
+        if (match) setSelectedDoctor(match);
+        else showToast('That doctor could not be found.');
+      })
+      .catch((requestError) => {
+        if (active) showToast(requestError.message);
+      });
+    return () => { active = false; };
+  }, [auth?.token, selectedDoctorId, showToast]);
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!media) return undefined;
+    setSystemDark(media.matches);
+    const update = (event) => setSystemDark(event.matches);
+    media.addEventListener?.('change', update);
+    return () => media.removeEventListener?.('change', update);
+  }, []);
+
   function signOut() {
     localStorage.removeItem('careflow-auth');
     setAuth(null);
     setPage('chat');
+    closeDoctorDrawer();
   }
   function onAuthenticated(result) {
     const value = { token: result.token, user: result.user };
@@ -144,22 +150,43 @@ export default function App() {
   }
   if (!auth?.token) return <AuthPage onAuthenticated={onAuthenticated} />;
 
+  const darkMode = manualDark ?? systemDark;
+
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={darkMode ? 'dark' : 'light'}>
       <header className="topbar">
-        <button className="brand" onClick={() => setPage('chat')} aria-label="CareFlow home"><span className="brand-mark">+</span>careflow<span className="brand-dot">.</span></button>
+        <button className="brand" type="button" onClick={() => navigate('chat')} aria-label="CareFlow home"><span className="brand-mark">+</span>careflow<span className="brand-dot">.</span></button>
         <nav aria-label="Main navigation">
-          <button className={page === 'chat' ? 'active' : ''} onClick={() => setPage('chat')}>Assistant</button>
-          <button className={page === 'doctors' ? 'active' : ''} onClick={() => setPage('doctors')}>Find doctors</button>
-          <button className={page === 'appointments' ? 'active' : ''} onClick={() => setPage('appointments')}>Appointments</button>
+          <button type="button" className={page === 'chat' ? 'active' : ''} aria-current={page === 'chat' ? 'page' : undefined} onClick={() => navigate('chat')}>Assistant</button>
+          <button type="button" className={page === 'doctors' ? 'active' : ''} aria-current={page === 'doctors' ? 'page' : undefined} onClick={() => navigate('doctors')}>Find doctors</button>
+          <button type="button" className={page === 'appointments' ? 'active' : ''} aria-current={page === 'appointments' ? 'page' : undefined} onClick={() => navigate('appointments')}>Appointments</button>
         </nav>
-        <div className="account-menu"><span>{auth.user?.email}</span><button onClick={signOut}>Sign out</button></div>
+        <div className="account-menu">
+          <button className="theme-toggle" type="button" aria-label={`Switch to ${darkMode ? 'light' : 'dark'} mode`} aria-pressed={darkMode} onClick={() => setManualDark(!darkMode)}>{darkMode ? '☼' : '◐'}</button>
+          <span>{auth.user?.email}</span><button type="button" onClick={signOut}>Sign out</button>
+        </div>
       </header>
       <main>
         {page !== 'chat' && <div className="persistent-disclaimer"><Disclaimer /></div>}
-        {page === 'chat' ? <ChatPage token={auth.token} /> : page === 'doctors' ? <DoctorsPage token={auth.token} /> : <AppointmentsPage token={auth.token} />}
+        {page === 'chat'
+          ? <ChatPage token={auth.token} onDoctorSelect={openDoctor} />
+          : page === 'doctors'
+            ? <FindDoctorsPage token={auth.token} onSelectDoctor={openDoctor} />
+            : <AppointmentsPage token={auth.token} onNavigate={navigate} onToast={showToast} />}
       </main>
       <footer>CareFlow is a scheduling demo with fictional doctors. Not a substitute for professional medical care.</footer>
+      {selectedDoctor && (
+        <DoctorDrawer
+          key={selectedDoctor.id}
+          doctor={selectedDoctor}
+          token={auth.token}
+          returnFocusElement={returnFocusTarget.current}
+          onClose={closeDoctorDrawer}
+          onNavigate={navigate}
+          onToast={showToast}
+        />
+      )}
+      {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" aria-label="Dismiss notification" onClick={() => setToast('')}>×</button></div>}
     </div>
   );
 }

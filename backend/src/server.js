@@ -12,7 +12,7 @@ async function start() {
     pool,
     jwtSecret: config.JWT_SECRET,
     corsOrigin: config.CORS_ORIGIN,
-    apiKey: config.ANTHROPIC_API_KEY,
+    geminiApiKey: config.GEMINI_API_KEY,
     model: config.LLM_MODEL
   });
   const server = app.listen(port, '0.0.0.0', () => {

@@ -6,7 +6,11 @@ export async function apiRequest(path, { token, ...options } = {}) {
   const response = await fetch(`${apiBase}${path}`, { ...options, headers });
   if (response.status === 204) return null;
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || 'The request could not be completed.');
+  if (!response.ok) {
+    const error = new Error(payload.error || 'The request could not be completed.');
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 

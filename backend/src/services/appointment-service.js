@@ -4,7 +4,7 @@ function createAppointmentService(pool, bookingMetrics = { inc: () => {} }) {
   return {
     async validateSelection({ doctorId, slotId }) {
       const { rows } = await pool.query(
-        `SELECT s.id AS slot_id, s.starts_at, d.id AS doctor_id, d.name AS doctor_name, d.specialty
+        `SELECT s.id AS slot_id, s.starts_at, d.id AS doctor_id, d.name AS doctor_name, d.specialty, d.clinic
          FROM slots s
          JOIN doctors d ON d.id = s.doctor_id
          WHERE s.id = $1 AND s.doctor_id = $2 AND s.available = TRUE`,

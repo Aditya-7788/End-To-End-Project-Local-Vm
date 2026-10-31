@@ -46,6 +46,26 @@ function createDoctorService(pool) {
       return rows;
     },
 
+    async getUpcomingSlots({ doctorId, startDate, days = 7, now = new Date() }) {
+      const start = new Date(`${startDate}T00:00:00.000Z`);
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + days);
+      const from = new Date(Math.max(start.getTime(), now.getTime()));
+      const { rows } = await pool.query(
+        `SELECT s.id, s.doctor_id, s.starts_at, d.name AS doctor_name, d.clinic, d.specialty
+         FROM slots s
+         JOIN doctors d ON d.id = s.doctor_id
+         WHERE s.available = TRUE
+           AND ($1::uuid IS NULL OR s.doctor_id = $1)
+           AND s.starts_at >= $2::timestamptz
+           AND s.starts_at < $3::timestamptz
+         ORDER BY s.starts_at
+         LIMIT 100`,
+        [doctorId || null, from.toISOString(), end.toISOString()]
+      );
+      return rows;
+    },
+
     async getDoctor(doctorId) {
       const { rows } = await pool.query(
         'SELECT id, name, specialty, clinic, bio FROM doctors WHERE id = $1',

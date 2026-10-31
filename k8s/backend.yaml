@@ -42,11 +42,11 @@ spec:
                 secretKeyRef:
                   name: careflow-secrets
                   key: JWT_SECRET
-            - name: ANTHROPIC_API_KEY
+            - name: GEMINI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: careflow-secrets
-                  key: ANTHROPIC_API_KEY
+                  key: GEMINI_API_KEY
                   optional: true
           securityContext:
             allowPrivilegeEscalation: false

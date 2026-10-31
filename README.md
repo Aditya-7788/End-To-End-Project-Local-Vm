@@ -81,7 +81,7 @@ The CI job logs in with the VM's managed identity, builds and scans the image wi
 
 ## CareFlow AI appointment app
 
-CareFlow is a demo full-stack appointment scheduling app. The React/Vite SPA calls an Express API, which validates requests and uses PostgreSQL for accounts, fictional doctors, appointment slots, confirmed appointments, and per-user chat sessions. The optional Anthropic integration uses constrained function tools; without an API key the backend uses its built-in rule-based mock assistant. The assistant suggests specialties only, does not diagnose or provide treatment advice, and checks emergency keywords before calling an LLM. A booking is persisted only after an explicit confirmation on a separate chat turn. Never use this demo with real patient information.
+CareFlow is a demo full-stack appointment scheduling app. The React/Vite SPA calls an Express API, which validates requests and uses PostgreSQL for accounts, fictional doctors, appointment slots, confirmed appointments, and per-user chat sessions. Scheduling is enforced by the backend: symptoms map to one supported specialty, availability is searched for the next seven days (or the requested date), and the chat shows upcoming slots for up to two doctors. A requested day or time selects a matching slot, but a booking is persisted only after explicit confirmation in the latest user message. The optional Google Gemini integration handles open-ended chat only; it does not diagnose or provide treatment advice. Emergency keywords are checked before any model call. Never use this demo with real patient information.
 
 ### Medical disclaimer
 
@@ -90,7 +90,7 @@ CareFlow is a demo full-stack appointment scheduling app. The React/Vite SPA cal
 ### Run locally with Docker Compose
 
 1. Install Docker Desktop or Docker Engine with the Compose plugin.
-2. Copy `.env.example` to `.env`, replace the database password and JWT secret placeholders with local random values, and use the same database password in `DATABASE_URL` and `POSTGRES_PASSWORD`. Leave `ANTHROPIC_API_KEY` blank to use mock mode. Never commit `.env`.
+2. Copy `.env.example` to `.env`, replace the database password and JWT secret placeholders with local random values, and use the same database password in `DATABASE_URL` and `POSTGRES_PASSWORD`. Leave `GEMINI_API_KEY` blank to use mock mode. To use Gemini, set `GEMINI_API_KEY` and `LLM_MODEL` to a model available to your Google AI Studio account. Never commit `.env`.
 3. From the repository root, start the services:
 
    ```shell
@@ -99,7 +99,7 @@ CareFlow is a demo full-stack appointment scheduling app. The React/Vite SPA cal
 
 4. Open `http://localhost:8080`, create a demo account with a password of at least 10 characters, then use the assistant. Compose waits for Postgres and backend health checks and stores database data in the named `careflow-postgres` volume. Stop the services with `docker compose down`; remove the local database volume separately only if you intentionally want to erase demo data.
 
-The backend creates its schema and inserts ten fictional doctors across five specialties plus sample slots for the next seven days at startup. No real patient or doctor data is included. To run the app with Anthropic, set `ANTHROPIC_API_KEY` and `LLM_MODEL` in the local environment; the API key is never stored in source code or sent to the browser.
+The backend creates its schema and inserts ten fictional doctors across five specialties plus sample slots for the next seven days in India Standard Time at startup. No real patient or doctor data is included. Google AI Studio model availability, free-tier quotas, and pricing can change; check your account's current limits. The Gemini API key is used only by the backend and is never sent to the browser.
 
 ### Application environment variables
 
@@ -110,8 +110,8 @@ The backend creates its schema and inserts ten fictional doctors across five spe
 | `DATABASE_URL` | PostgreSQL connection string; its password must match `POSTGRES_PASSWORD` | Replace the placeholder in `.env.example` |
 | `JWT_SECRET` | Signing key for auth tokens; use a random value of at least 32 characters | Replace the placeholder in `.env.example` |
 | `CORS_ORIGIN` | Comma-separated allowed browser origins | `http://localhost:5173` |
-| `ANTHROPIC_API_KEY` | Optional server-side Anthropic API key; blank enables mock mode | blank |
-| `LLM_MODEL` | Anthropic model identifier | `claude-3-5-haiku-latest` |
+| `GEMINI_API_KEY` | Optional server-side Google Gemini API key; blank enables mock mode | blank |
+| `LLM_MODEL` | Gemini model identifier; required when `GEMINI_API_KEY` is set | blank |
 | `VITE_API_URL` | Frontend API prefix, baked into the Vite build | `/api` |
 | `POSTGRES_DB` | Compose PostgreSQL database name | `careflow` |
 | `POSTGRES_USER` | Compose PostgreSQL username | `careflow` |
@@ -119,7 +119,7 @@ The backend creates its schema and inserts ten fictional doctors across five spe
 | `BACKEND_HOST` | Backend DNS name used by the Nginx API proxy | `backend` in Compose; `careflow-backend` in Kubernetes |
 | `NGINX_ENVSUBST_FILTER` | Limits Nginx template substitution to the backend host variable | `^BACKEND_HOST$` |
 
-For Kubernetes, create the real `careflow-secrets` Secret out of band from a secure secret manager. `k8s/secret.example.yaml` contains deliberately unusable example values only; never apply it as production credentials. The backend expects `DATABASE_URL` and `JWT_SECRET` in that Secret; `ANTHROPIC_API_KEY` is optional. Configure the actual browser origin in `k8s/configmap.yaml`.
+For Kubernetes, create the real `careflow-secrets` Secret out of band from a secure secret manager. `k8s/secret.example.yaml` contains deliberately unusable example values only; never apply it as production credentials. The backend expects `DATABASE_URL` and `JWT_SECRET` in that Secret; `GEMINI_API_KEY` is optional. Configure `LLM_MODEL` and the actual browser origin in `k8s/configmap.yaml`.
 
 ### API
 
@@ -139,11 +139,11 @@ All API paths except health, readiness, metrics, and public doctor browsing requ
 | `GET` | `/ready` | Readiness probe; checks PostgreSQL |
 | `GET` | `/metrics` | Prometheus request, latency, and booking metrics |
 
-The database enforces a unique constraint on appointment `slot_id`, and booking uses a transaction and row lock. Chat sessions are scoped to the authenticated user, retain only the last twelve messages, and never trust user IDs or booking IDs supplied by an LLM as the patient's identity. Emergency keyword checks run before the optional model call.
+The database enforces a unique constraint on appointment `slot_id`, and booking uses a transaction and row lock. Chat sessions are scoped to the authenticated user, retain only the last twelve messages, and never trust user IDs or booking IDs supplied by an LLM as the patient's identity. Emergency keyword checks run before the optional model call; specialty search, slot matching, and confirmation-gated booking are handled by backend rules.
 
 ### Tests and build
 
-From the repository root, install the locked workspace dependencies with `npm ci`, then run `npm test`. The backend Jest/Supertest tests use an in-memory PostgreSQL-compatible database, and the frontend uses Vitest and React Testing Library; tests do not require Docker, a network database, or an Anthropic key. Build the frontend with `npm run build --workspace frontend`.
+From the repository root, install the locked workspace dependencies with `npm ci`, then run `npm test`. The backend Jest/Supertest tests use an in-memory PostgreSQL-compatible database, and the frontend uses Vitest and React Testing Library; tests do not require Docker, a network database, or a Gemini API key. Build the frontend with `npm run build --workspace frontend`.
 
 ### Kubernetes
 

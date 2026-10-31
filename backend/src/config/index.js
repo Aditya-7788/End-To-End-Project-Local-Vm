@@ -6,9 +6,17 @@ const environmentSchema = z.object({
   DATABASE_URL: z.string().url(),
   JWT_SECRET: z.string().min(32),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
-  ANTHROPIC_API_KEY: z.string().default(''),
-  LLM_MODEL: z.string().min(1).default('claude-3-5-haiku-latest'),
+  GEMINI_API_KEY: z.string().default(''),
+  LLM_MODEL: z.string().trim().default(''),
   DB_POOL_SIZE: z.coerce.number().int().min(1).max(100).default(10)
+}).superRefine((config, context) => {
+  if (config.GEMINI_API_KEY && !config.LLM_MODEL) {
+    context.addIssue({
+      code: 'custom',
+      path: ['LLM_MODEL'],
+      message: 'LLM_MODEL is required when GEMINI_API_KEY is set.'
+    });
+  }
 });
 
 function loadConfig(environment = process.env) {

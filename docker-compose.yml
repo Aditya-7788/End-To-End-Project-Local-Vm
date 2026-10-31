@@ -24,8 +24,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080,http://localhost:5173}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-claude-3-5-haiku-latest}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
     depends_on:
       postgres:
         condition: service_healthy

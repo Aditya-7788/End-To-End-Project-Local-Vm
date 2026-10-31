@@ -20,9 +20,9 @@ function createApp({
   pool,
   jwtSecret = process.env.JWT_SECRET,
   corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173',
-  anthropicClient,
+  geminiClient,
   chatService: injectedChatService,
-  apiKey,
+  geminiApiKey,
   model
 }) {
   if (!pool) throw new Error('A database pool is required.');
@@ -33,7 +33,14 @@ function createApp({
   const authService = createAuthService(pool, { jwtSecret });
   const doctorService = createDoctorService(pool);
   const appointmentService = createAppointmentService(pool, bookingResults);
-  const chatService = injectedChatService || createChatService({ pool, doctorService, appointmentService, anthropicClient, apiKey, model });
+  const chatService = injectedChatService || createChatService({
+    pool,
+    doctorService,
+    appointmentService,
+    geminiClient,
+    apiKey: geminiApiKey,
+    model
+  });
   const healthController = createHealthController(pool);
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,

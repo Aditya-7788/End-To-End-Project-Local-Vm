@@ -30,12 +30,25 @@ async function seedDoctorsAndSlots(pool, now = new Date()) {
   const { rows } = await pool.query('SELECT id FROM doctors ORDER BY name');
   const slotValues = [];
   const slotRows = [];
+  const dateParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(now);
+  const localDate = Object.fromEntries(dateParts.map(({ type, value }) => [type, value]));
+  const firstDay = new Date(`${localDate.year}-${localDate.month}-${localDate.day}T00:00:00.000Z`);
   for (const doctor of rows) {
     for (let day = 0; day < 7; day += 1) {
       for (const hour of [9, 10, 11, 14, 15, 16]) {
-        const startsAt = new Date(now);
-        startsAt.setUTCDate(startsAt.getUTCDate() + day);
-        startsAt.setUTCHours(hour, 0, 0, 0);
+        const clinicDate = new Date(firstDay);
+        clinicDate.setUTCDate(clinicDate.getUTCDate() + day);
+        const startsAt = new Date(Date.UTC(
+          clinicDate.getUTCFullYear(),
+          clinicDate.getUTCMonth(),
+          clinicDate.getUTCDate(),
+          hour
+        ) - 330 * 60 * 1000);
         const offset = slotValues.length;
         slotValues.push(randomUUID(), doctor.id, startsAt.toISOString());
         slotRows.push(`($${offset + 1}, $${offset + 2}, $${offset + 3})`);
