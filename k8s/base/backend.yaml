@@ -23,7 +23,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: careflow-backend
-          image: <ACR_NAME>.azurecr.io/careflow-backend:latest
+          image: careflow-backend:latest
           imagePullPolicy: Always
           ports:
             - name: http

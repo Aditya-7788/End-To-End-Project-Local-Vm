@@ -1,4 +1,4 @@
-name: Azure self-hosted runner CI/CD
+name: CareFlow CI/CD
 
 on:
   push:
@@ -9,90 +9,349 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: careflow-deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  DEPLOY_TARGET: ${{ vars.DEPLOY_TARGET || 'onprem' }}
+  TRIVY_SEVERITY: ${{ vars.TRIVY_SEVERITY || 'HIGH,CRITICAL' }}
+
 jobs:
   ci:
     name: Test, build, scan, and push
-    runs-on: [self-hosted, linux, azure, docker]
-    env:
-      ACR_NAME: ${{ vars.ACR_NAME }}
+    runs-on: [self-hosted, linux, docker]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - context: backend
+            image: careflow-backend
+          - context: frontend
+            image: careflow-frontend
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
-      - name: Set container image name
+      - name: Validate deployment target
         run: |
-          if [ -z "$ACR_NAME" ]; then
-            echo "Set the ACR_NAME repository variable." >&2
-            exit 1
-          fi
-          image_repository=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
-          echo "IMAGE=${ACR_NAME}.azurecr.io/${image_repository}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          case "$DEPLOY_TARGET" in
+            onprem|azure) ;;
+            *)
+              echo "DEPLOY_TARGET must be onprem or azure." >&2
+              exit 1
+              ;;
+          esac
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
+          cache-dependency-path: ${{ matrix.context }}/package-lock.json
 
       - name: Install dependencies
+        working-directory: ${{ matrix.context }}
         run: npm ci
 
       - name: Run tests
+        working-directory: ${{ matrix.context }}
         run: npm test
 
+      - name: Isolate registry credentials
+        run: |
+          set -euo pipefail
+          docker_config="$RUNNER_TEMP/careflow-docker-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.context }}"
+          mkdir -p "$docker_config"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        if: vars.DEPLOY_TARGET != 'azure'
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_USERNAME:?Set the DOCKERHUB_USERNAME repository variable.}"
+          : "${DOCKERHUB_TOKEN:?Set the DOCKERHUB_TOKEN repository secret.}"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
       - name: Sign in with the runner managed identity
+        if: vars.DEPLOY_TARGET == 'azure'
         run: az login --identity
 
       - name: Log in to Azure Container Registry
-        run: az acr login --name "$ACR_NAME"
+        if: vars.DEPLOY_TARGET == 'azure'
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          set -euo pipefail
+          : "${ACR_NAME:?Set the ACR_NAME repository variable.}"
+          az acr login --name "$ACR_NAME"
+
+      - name: Set Docker Hub image name
+        if: vars.DEPLOY_TARGET != 'azure'
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_USERNAME:?Set the DOCKERHUB_USERNAME repository variable.}"
+          echo "IMAGE=${DOCKERHUB_USERNAME}/${{ matrix.image }}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Set Azure Container Registry image name
+        if: vars.DEPLOY_TARGET == 'azure'
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          set -euo pipefail
+          : "${ACR_NAME:?Set the ACR_NAME repository variable.}"
+          echo "IMAGE=${ACR_NAME}.azurecr.io/${{ matrix.image }}:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Build container image
-        run: docker build --tag "$IMAGE" .
+        run: docker build --tag "$IMAGE" "./${{ matrix.context }}"
 
       - name: Scan image with Trivy
         run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/trivy"
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:latest image \
+            -v "$HOME/.cache/trivy:/root/.cache/" \
+            aquasec/trivy:0.58.2 image \
             --exit-code 1 \
-            --severity HIGH,CRITICAL \
+            --severity "$TRIVY_SEVERITY" \
             "$IMAGE"
 
-      - name: Push image to Azure Container Registry
+      - name: Push image
         run: docker push "$IMAGE"
 
-  cd:
-    name: Deploy to private AKS
-    needs: ci
-    runs-on: [self-hosted, linux, azure, docker]
-    env:
-      ACR_NAME: ${{ vars.ACR_NAME }}
-      AKS_NAME: ${{ vars.AKS_NAME }}
-      AKS_RG: ${{ vars.AKS_RG }}
-      K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
-      DEPLOYMENT: ${{ vars.DEPLOYMENT }}
-      CONTAINER: ${{ vars.CONTAINER }}
-    steps:
-      - name: Set container image name
+      - name: Remove registry credentials
+        if: always()
         run: |
-          if [ -z "$ACR_NAME" ]; then
-            echo "Set the ACR_NAME repository variable." >&2
+          set -euo pipefail
+          if [ -n "${DOCKER_CONFIG:-}" ] && [ -f "$DOCKER_CONFIG/config.json" ]; then
+            rm -- "$DOCKER_CONFIG/config.json"
+          fi
+
+  cd:
+    name: Deploy to Kubernetes
+    needs: ci
+    runs-on: [self-hosted, linux, docker]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Validate deployment target
+        run: |
+          case "$DEPLOY_TARGET" in
+            onprem|azure) ;;
+            *)
+              echo "DEPLOY_TARGET must be onprem or azure." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Use runner kubeconfig
+        if: vars.DEPLOY_TARGET != 'azure'
+        run: |
+          set -euo pipefail
+          if [ ! -r "$HOME/.kube/config" ]; then
+            echo "The runner user cannot read $HOME/.kube/config." >&2
             exit 1
           fi
-          image_repository=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
-          echo "IMAGE=${ACR_NAME}.azurecr.io/${image_repository}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "KUBECONFIG=$HOME/.kube/config" >> "$GITHUB_ENV"
+          kubectl get nodes
 
       - name: Sign in with the runner managed identity
+        if: vars.DEPLOY_TARGET == 'azure'
         run: az login --identity
 
       - name: Get AKS credentials
-        run: az aks get-credentials --resource-group "$AKS_RG" --name "$AKS_NAME" --overwrite-existing
+        if: vars.DEPLOY_TARGET == 'azure'
+        env:
+          AKS_NAME: ${{ vars.AKS_NAME }}
+          AKS_RG: ${{ vars.AKS_RG }}
+        run: |
+          set -euo pipefail
+          : "${AKS_NAME:?Set the AKS_NAME repository variable.}"
+          : "${AKS_RG:?Set the AKS_RG repository variable.}"
+          az aks get-credentials --resource-group "$AKS_RG" --name "$AKS_NAME" --overwrite-existing
 
       - name: Configure kubectl for Azure CLI authentication
+        if: vars.DEPLOY_TARGET == 'azure'
         run: kubelogin convert-kubeconfig -l azurecli
 
-      - name: Update deployment image
-        run: kubectl set image "deployment/$DEPLOYMENT" "$CONTAINER=$IMAGE" --namespace "$K8S_NAMESPACE"
+      - name: Ensure Kustomize is installed
+        run: |
+          set -euo pipefail
+          if command -v kustomize >/dev/null; then
+            kustomize version
+            exit 0
+          fi
+          version=v5.6.0
+          case "$(uname -m)" in
+            x86_64) architecture=amd64 ;;
+            aarch64) architecture=arm64 ;;
+            *)
+              echo "Unsupported runner architecture for Kustomize: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          install_directory="$RUNNER_TEMP/kustomize"
+          archive="$RUNNER_TEMP/kustomize-${version}.tar.gz"
+          mkdir -p "$install_directory"
+          curl -fsSL \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${version}/kustomize_${version}_linux_${architecture}.tar.gz" \
+            -o "$archive"
+          tar -xzf "$archive" -C "$install_directory" kustomize
+          rm -f "$archive"
+          chmod 0755 "$install_directory/kustomize"
+          echo "$install_directory" >> "$GITHUB_PATH"
+          "$install_directory/kustomize" version
 
-      - name: Wait for rollout
-        run: kubectl rollout status "deployment/$DEPLOYMENT" --namespace "$K8S_NAMESPACE" --timeout=5m
+      - name: Set Docker Hub deployment images
+        if: vars.DEPLOY_TARGET != 'azure'
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_USERNAME:?Set the DOCKERHUB_USERNAME repository variable.}"
+          {
+            echo "BACKEND_IMAGE=${DOCKERHUB_USERNAME}/careflow-backend:${GITHUB_SHA}"
+            echo "FRONTEND_IMAGE=${DOCKERHUB_USERNAME}/careflow-frontend:${GITHUB_SHA}"
+            echo "OVERLAY_DIR=k8s/overlays/onprem"
+          } >> "$GITHUB_ENV"
+
+      - name: Set Azure deployment images
+        if: vars.DEPLOY_TARGET == 'azure'
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          set -euo pipefail
+          : "${ACR_NAME:?Set the ACR_NAME repository variable.}"
+          {
+            echo "BACKEND_IMAGE=${ACR_NAME}.azurecr.io/careflow-backend:${GITHUB_SHA}"
+            echo "FRONTEND_IMAGE=${ACR_NAME}.azurecr.io/careflow-frontend:${GITHUB_SHA}"
+            echo "OVERLAY_DIR=k8s/overlays/azure"
+          } >> "$GITHUB_ENV"
+
+      - name: Create namespace
+        run: kubectl create namespace careflow --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create or update application secrets
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          : "${JWT_SECRET:?Set the JWT_SECRET repository secret.}"
+          : "${POSTGRES_PASSWORD:?Set the POSTGRES_PASSWORD repository secret.}"
+          encoded_password=$(jq -rn --arg value "$POSTGRES_PASSWORD" '$value | @uri')
+          database_url="postgres://careflow:${encoded_password}@careflow-postgres:5432/careflow"
+          kubectl create secret generic careflow-secrets \
+            --namespace careflow \
+            --from-literal=JWT_SECRET="$JWT_SECRET" \
+            --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+            --from-literal=GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
+            --from-literal=DATABASE_URL="$database_url" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          unset encoded_password database_url
+
+      - name: Set images in selected kustomize overlay
+        run: |
+          set -euo pipefail
+          command -v kustomize >/dev/null || {
+            echo "kustomize is required on the self-hosted runner." >&2
+            exit 1
+          }
+          (
+            cd "$OVERLAY_DIR"
+            kustomize edit set image \
+              "careflow-backend=${BACKEND_IMAGE}" \
+              "careflow-frontend=${FRONTEND_IMAGE}"
+          )
+
+      - name: Apply selected kustomize overlay
+        run: kubectl apply -k "$OVERLAY_DIR"
+
+      - name: Apply configured LLM model
+        env:
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+        run: |
+          set -euo pipefail
+          model_patch=$(jq -cn --arg model "${LLM_MODEL:-}" '{data:{LLM_MODEL:$model}}')
+          kubectl patch configmap careflow-config \
+            --namespace careflow \
+            --type merge \
+            --patch "$model_patch"
+          kubectl rollout restart deployment/careflow-backend --namespace careflow
+
+      - name: Wait for application rollouts
+        run: |
+          set -euo pipefail
+          diagnose_rollout() {
+            local resource="$1"
+            local selector="$2"
+            local deployment="$3"
+            local pods
+
+            if ! kubectl describe "$resource" --namespace careflow; then
+              echo "Unable to describe $resource during rollout diagnostics." >&2
+            fi
+            if pods=$(kubectl get pods --namespace careflow --selector "$selector" --output name); then
+              while IFS= read -r pod; do
+                [ -n "$pod" ] || continue
+                if ! kubectl describe "$pod" --namespace careflow; then
+                  echo "Unable to describe $pod during rollout diagnostics." >&2
+                fi
+                if ! kubectl logs "$pod" --namespace careflow --all-containers=true --tail=100 --since=15m; then
+                  echo "Unable to retrieve recent logs for $pod." >&2
+                fi
+              done <<< "$pods"
+            else
+              echo "Unable to list pods for selector $selector." >&2
+            fi
+            if [ -n "$deployment" ]; then
+              if ! kubectl rollout undo "$deployment" --namespace careflow; then
+                echo "Unable to roll back $deployment; the deployment may not have a previous revision." >&2
+              fi
+            fi
+          }
+
+          if ! kubectl rollout status statefulset/careflow-postgres --namespace careflow --timeout=5m; then
+            diagnose_rollout statefulset/careflow-postgres app=careflow-postgres ""
+            exit 1
+          fi
+          if ! kubectl rollout status deployment/careflow-backend --namespace careflow --timeout=5m; then
+            diagnose_rollout deployment/careflow-backend app=careflow-backend deployment/careflow-backend
+            exit 1
+          fi
+          if ! kubectl rollout status deployment/careflow-frontend --namespace careflow --timeout=5m; then
+            diagnose_rollout deployment/careflow-frontend app=careflow-frontend deployment/careflow-frontend
+            exit 1
+          fi
+
+      - name: Print on-prem access URL
+        if: vars.DEPLOY_TARGET != 'azure'
+        run: |
+          set -euo pipefail
+          node_ip=$(kubectl get nodes --output json | jq -r \
+            '[.items[].status.addresses[] | select(.type == "InternalIP") | .address][0] // empty')
+          if [ -z "$node_ip" ]; then
+            echo "No node InternalIP was found; cannot print the on-prem access URL." >&2
+            exit 1
+          fi
+          echo "Application URL: http://${node_ip}:30080"
+
+      - name: Print Azure access URL
+        if: vars.DEPLOY_TARGET == 'azure'
+        run: |
+          set -euo pipefail
+          address=$(kubectl get service careflow-frontend --namespace careflow --output json | jq -r \
+            '.status.loadBalancer.ingress[0].ip // .status.loadBalancer.ingress[0].hostname // empty')
+          if [ -z "$address" ]; then
+            echo "The Azure frontend LoadBalancer is still provisioning; check service/careflow-frontend."
+          else
+            echo "Application URL: http://${address}"
+          fi

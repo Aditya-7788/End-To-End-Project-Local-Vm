@@ -19,6 +19,10 @@ node_modules/
 .env
 .env.*
 !.env.example
+**/.kube/
+kubeconfig
+kubeconfig.*
+*.kubeconfig
 dist/
 coverage/
 npm-debug.log*

@@ -1,0 +1,112 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  # The workflow supplies Docker Hub account names and commit-specific tags.
+  - name: careflow-backend
+  - name: careflow-frontend
+
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: StatefulSet
+      name: careflow-postgres
+    patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: careflow-postgres
+      spec:
+        template:
+          spec:
+            containers:
+              - name: postgres
+                imagePullPolicy: IfNotPresent
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: 500m
+                    memory: 768Mi
+        volumeClaimTemplates:
+          - metadata:
+              name: postgres-data
+            spec:
+              storageClassName: local-path
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: careflow-backend
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: careflow-backend
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: careflow-backend
+                imagePullPolicy: IfNotPresent
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 192Mi
+                  limits:
+                    cpu: 500m
+                    memory: 512Mi
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: careflow-frontend
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: careflow-frontend
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: careflow-frontend
+                imagePullPolicy: IfNotPresent
+                resources:
+                  requests:
+                    cpu: 25m
+                    memory: 64Mi
+                  limits:
+                    cpu: 200m
+                    memory: 128Mi
+  - target:
+      group: autoscaling
+      version: v2
+      kind: HorizontalPodAutoscaler
+      name: careflow-backend
+    patch: |-
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: careflow-backend
+      spec:
+        minReplicas: 1
+        maxReplicas: 2
+  - target:
+      version: v1
+      kind: Service
+      name: careflow-frontend
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 30080

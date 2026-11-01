@@ -8,6 +8,9 @@ data:
   PORT: "3000"
   CORS_ORIGIN: "http://careflow.internal"
   DB_POOL_SIZE: "10"
+  POSTGRES_DB: "careflow"
+  POSTGRES_USER: "careflow"
   LLM_MODEL: ""
+  # frontend/nginx.conf substitutes this value to reach the backend Service.
   BACKEND_HOST: "careflow-backend"
   NGINX_ENVSUBST_FILTER: "^BACKEND_HOST$"

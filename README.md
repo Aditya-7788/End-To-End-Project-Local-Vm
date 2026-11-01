@@ -1,5 +1,85 @@
 # june-2026-End-To-End-Project
 
+## On-prem deployment
+
+The same workflow can deploy to this on-prem kubeadm cluster by default or to Azure when `DEPLOY_TARGET=azure`.
+
+```text
+Push to main / Run workflow
+          |
+          v
+  CI matrix (backend, frontend): npm ci -> npm test -> Docker build -> Trivy scan
+          |
+          v
+  Push SHA-tagged images to Docker Hub (or ACR for Azure)
+          |
+          v
+  Self-hosted runner -> kubeconfig / AKS credentials -> kustomize overlay -> kubectl apply
+          |
+          v
+  PostgreSQL + backend + frontend rollouts -> http://<node-ip>:30080
+```
+
+### One-time setup
+
+1. Prepare a kubeadm cluster with worker nodes reachable from the runner. For the on-prem overlay, allow TCP NodePort `30080` to the workers and use worker VMs with at least 2 CPU and 4 GB RAM. Install the local-path provisioner on the cluster:
+
+   ```shell
+   bash scripts/setup-local-path-storage.sh
+   ```
+
+2. On a dedicated Ubuntu 22.04 or 24.04 runner host that can reach the cluster API, install Docker, Node 22, kubectl, Kustomize, and the runner. The helper uses the latest Kubernetes stable minor for kubectl by default; set `KUBERNETES_MINOR` to the cluster's minor version when needed:
+
+   ```shell
+   sudo bash scripts/setup-runner.sh
+   ```
+
+   Before running it, open the private repository's **Settings → Actions → Runners → New self-hosted runner** page to generate a short-lived registration token. The helper asks for the repository URL and accepts the token at a hidden prompt; it does not write the token to a file. The runner is installed as a systemd service with the `docker` label; `self-hosted` and `linux` are automatic.
+
+3. Give the `github-runner` account a kubeconfig that is authorized to create the `careflow` namespace and manage its application resources. From the administrator account whose kubeconfig should be copied, run:
+
+   ```shell
+   sudo bash scripts/setup-kubeconfig-for-runner.sh "$HOME/.kube/config"
+   ```
+
+   The helper installs it as `/home/github-runner/.kube/config` with mode `0600` and verifies `kubectl get nodes` as the runner user. Keep the runner kubeconfig scoped to this cluster and protect the private repository because its workflows can use runner credentials.
+
+4. Create two **public** Docker Hub repositories named `careflow-backend` and `careflow-frontend` in the account used by the workflow. In Docker Hub, create an access token with **Read & Write** permissions. Public images let kubelet pull without a separate registry Secret.
+
+5. In the GitHub repository, configure the variables and secrets below, then confirm the self-hosted runner is online under **Settings → Actions → Runners**. Pushes to `main` and manual workflow runs test, build, scan, push, and deploy. Pull-request runs are intentionally disabled for self-hosted safety.
+
+### GitHub variables and secrets
+
+| Name | Type | Value |
+|---|---|---|
+| `DEPLOY_TARGET` | Variable | `onprem` (default when unset); use `azure` to select Azure |
+| `DOCKERHUB_USERNAME` | Variable | Docker Hub account that owns both public image repositories |
+| `LLM_MODEL` | Variable | Gemini model identifier; required when `GEMINI_API_KEY` is set |
+| `TRIVY_SEVERITY` | Variable | Optional Trivy severity list; defaults to `HIGH,CRITICAL` |
+| `DOCKERHUB_TOKEN` | Secret | Docker Hub access token with Read & Write permissions |
+| `JWT_SECRET` | Secret | Random signing key of at least 32 characters |
+| `POSTGRES_PASSWORD` | Secret | Random database password; use a strong generated value |
+| `GEMINI_API_KEY` | Secret | Optional Google AI Studio API key; blank enables mock mode |
+
+The workflow creates or updates the Kubernetes Secret from the three application secrets and constructs an encoded PostgreSQL connection URL. The username and database name are `careflow`; do not add another LLM setting. The only LLM settings are `GEMINI_API_KEY` and `LLM_MODEL`.
+
+The base manifests in `k8s/base/` exclude both `k8s/secret.example.yaml` and `k8s/ingress.yaml`. Do not apply the example Secret. The on-prem overlay uses a NodePort Service on `30080`, a `local-path` PVC, and low resource requests. Its ConfigMap sets `BACKEND_HOST=careflow-backend`, which resolves to the `careflow-backend` Service in the same namespace; this matches the variable expanded by the existing `frontend/nginx.conf` template, so nginx does not need modification.
+
+### Switching to Azure
+
+Set `DEPLOY_TARGET` to `azure` and configure the Azure repository variables `ACR_NAME` (without `.azurecr.io`), `AKS_NAME`, and `AKS_RG`. The runner must have a managed identity authorized to push to ACR and access AKS, plus `az` and `kubelogin`; the workflow uses `az login --identity`, retrieves AKS credentials, and selects the Azure overlay. Azure uses ACR SHA-tagged images and a frontend LoadBalancer Service. The existing Terraform files are not changed by this workflow.
+
+### Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| `ImagePullBackOff` | Confirm both Docker Hub repositories are public, the image names match `DOCKERHUB_USERNAME`, and the pushed SHA tag exists. |
+| PVC remains `Pending` | Check `kubectl get storageclass`, confirm `local-path` is installed and the overlay requests `local-path`, then inspect the local-path provisioner pod and events. |
+| nginx reports `host not found in upstream` | Confirm the `careflow-backend` Service exists in namespace `careflow`, and the frontend ConfigMap sets `BACKEND_HOST=careflow-backend`. |
+| Runner is offline | Check the `actions.runner` systemd service, network access to GitHub, the runner labels, and whether the registration token was still valid during registration. |
+
+**Security:** Self-hosted runners must only be used with **private repositories** you control. Do not enable pull-request workflows from untrusted contributors on a self-hosted runner.
+
 ## Azure GitHub Actions self-hosted runner
 
 The Terraform configuration in `infrastructure/terraform/` creates a private Ubuntu 22.04 LTS VM with a system-assigned managed identity, a dedicated subnet and NSG, and optional Azure Bastion, NAT Gateway, Log Analytics, and AKS VNet peering. The VM has no public IP. Use Bastion for administration and a GitHub short-lived registration token only when registering the runner.
@@ -73,11 +153,9 @@ The runner's system-assigned managed identity is used by Azure CLI and the pipel
 
 **Security:** Use self-hosted runners only with private repositories you control. A workflow executed on a self-hosted runner can access the VM's network and managed identity. Do not run untrusted pull-request code or public-repository workflows on this runner.
 
-## GitHub Actions CI/CD
+## Azure GitHub Actions runner
 
-`.github/workflows/ci-cd.yml` runs CI and CD on `[self-hosted, linux, azure, docker]`. Configure these GitHub repository variables: `ACR_NAME`, `AKS_NAME`, `AKS_RG`, `K8S_NAMESPACE`, `DEPLOYMENT`, and `CONTAINER`. The repository must also contain the Node.js project, Dockerfile, and tests expected by `npm ci`, `npm test`, and `docker build`.
-
-The CI job logs in with the VM's managed identity, builds and scans the image with Trivy (failing on HIGH or CRITICAL findings), and pushes it to ACR. The CD job retrieves AKS credentials, converts kubeconfig for Azure CLI authentication, updates the configured Kubernetes container image, and waits for rollout completion. The runner remains outside AKS and reaches its private API through VNet connectivity.
+The Azure deployment target uses the same CI/CD workflow and `[self-hosted, linux, docker]` labels as the on-prem target. For Azure, configure `DEPLOY_TARGET=azure`, `ACR_NAME`, `AKS_NAME`, and `AKS_RG`; the runner's managed identity logs in to ACR and AKS. Keep the existing private-network, identity, and least-privilege requirements described above.
 
 ## CareFlow AI appointment app
 
@@ -119,7 +197,7 @@ The backend creates its schema and inserts ten fictional doctors across five spe
 | `BACKEND_HOST` | Backend DNS name used by the Nginx API proxy | `backend` in Compose; `careflow-backend` in Kubernetes |
 | `NGINX_ENVSUBST_FILTER` | Limits Nginx template substitution to the backend host variable | `^BACKEND_HOST$` |
 
-For Kubernetes, create the real `careflow-secrets` Secret out of band from a secure secret manager. `k8s/secret.example.yaml` contains deliberately unusable example values only; never apply it as production credentials. The backend expects `DATABASE_URL` and `JWT_SECRET` in that Secret; `GEMINI_API_KEY` is optional. Configure `LLM_MODEL` and the actual browser origin in `k8s/configmap.yaml`.
+For Kubernetes, the workflow creates the `careflow-secrets` Secret from GitHub Actions secrets. `k8s/secret.example.yaml` contains deliberately unusable example values only; never apply it as production credentials. The backend reads `DATABASE_URL`, `JWT_SECRET`, and optional `GEMINI_API_KEY`; PostgreSQL reads `POSTGRES_PASSWORD`. The workflow applies the `LLM_MODEL` repository variable to the ConfigMap.
 
 ### API
 
@@ -145,23 +223,10 @@ The database enforces a unique constraint on appointment `slot_id`, and booking 
 
 From the repository root, install the locked workspace dependencies with `npm ci`, then run `npm test`. The backend Jest/Supertest tests use an in-memory PostgreSQL-compatible database, and the frontend uses Vitest and React Testing Library; tests do not require Docker, a network database, or a Gemini API key. Build the frontend with `npm run build --workspace frontend`.
 
+The backend and frontend images are built from their respective directories. The obsolete root `Dockerfile` is retained at `docs/legacy/Dockerfile`; the root `package.json` and `package-lock.json` remain active for workspace-level npm commands.
+
 ### Kubernetes
 
-The `k8s/` manifests define namespace `careflow`, a PostgreSQL StatefulSet with a persistent volume claim, backend and frontend Deployments/ClusterIP Services, an internal-ingress-class Ingress, ConfigMap, and a backend HPA (70% CPU target, 2–5 replicas). The image names in the manifests are intentionally `<ACR_NAME>.azurecr.io/careflow-backend:latest` and `<ACR_NAME>.azurecr.io/careflow-frontend:latest`; replace those with your registry when preparing your own deployment. Configure the actual private ingress class and DNS host to match your AKS ingress controller. The ingress routes to the frontend, whose Nginx server proxies `/api` to the backend Service.
+The `k8s/base/` resources and overlays define namespace `careflow`, a PostgreSQL StatefulSet with a PVC, backend and frontend Deployments and Services, a ConfigMap, and a backend HPA. `kubectl apply -k k8s/overlays/onprem` selects the NodePort/local-path overlay; `kubectl apply -k k8s/overlays/azure` selects the LoadBalancer overlay. Neither includes `k8s/ingress.yaml` or `k8s/secret.example.yaml`. The workflow updates both images to their commit SHA before applying the selected overlay.
 
-PostgreSQL in this demo uses an in-cluster PVC. For production, Azure Database for PostgreSQL is a better choice for managed backups, patching, and high availability. Use a private database endpoint and restrict network access. The Kubernetes deployment runs the API and frontend as non-root with resource limits and probes; store all real credentials in a Secret populated from a secure secret manager, not in Git.
-
-### CI/CD repository variables and two-image workflow
-
-The existing single-image workflow reads these GitHub repository variables:
-
-| Repository variable | Value |
-|---|---|
-| `ACR_NAME` | Azure Container Registry name (without `.azurecr.io`) |
-| `AKS_NAME` | Target AKS cluster name |
-| `AKS_RG` | Resource group containing AKS |
-| `K8S_NAMESPACE` | `careflow` |
-| `DEPLOYMENT` | `careflow-backend` for the backend image |
-| `CONTAINER` | `careflow-backend` for the backend container |
-
-The existing workflow is single-image; the root `Dockerfile` builds the backend image for that workflow. The app requires **two** images and deployments: `careflow-backend` / container `careflow-backend`, and `careflow-frontend` / container `careflow-frontend`. To adapt the CI job without changing its runner authentication, use a `strategy.matrix.include` with one entry per image, each specifying its Dockerfile (`backend/Dockerfile` or `frontend/Dockerfile`), image name, deployment name, and matching container name. Build, tag with the commit SHA, scan, and push each matrix image. For CD, obtain AKS credentials once and update both deployment/container pairs (or matrix the CD job as well), then wait for both rollouts. The workflow currently exposes singular `DEPLOYMENT` and `CONTAINER` variables, so use the corresponding pair for each image or replace those inputs with a two-entry matrix; do not deploy the frontend image to the backend deployment.
+PostgreSQL in this demo uses an in-cluster PVC. For production, Azure Database for PostgreSQL is a better choice for managed backups, patching, and high availability. Use a private database endpoint and restrict network access. The Kubernetes deployment runs the API and frontend as non-root with resource limits and probes; never store real credentials in Git.

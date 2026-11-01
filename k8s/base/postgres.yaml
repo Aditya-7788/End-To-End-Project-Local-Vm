@@ -42,13 +42,13 @@ spec:
           env:
             - name: POSTGRES_DB
               valueFrom:
-                secretKeyRef:
-                  name: careflow-secrets
+                configMapKeyRef:
+                  name: careflow-config
                   key: POSTGRES_DB
             - name: POSTGRES_USER
               valueFrom:
-                secretKeyRef:
-                  name: careflow-secrets
+                configMapKeyRef:
+                  name: careflow-config
                   key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:
